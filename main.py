@@ -107,7 +107,9 @@ async def upload_file(
 
 @app.post("/ask")
 async def ask(query:Query):
-    docs = hybridRetriever.search(query=query, k=3)
+    result = hybridRetriever.search(query=query, k=3)
+    docs = result["docs"]
+    metadata = result["metadata"]
 
     print("\nRetrieved scores:")
     for doc, score in docs:
@@ -121,6 +123,7 @@ async def ask(query:Query):
             "question": query.question,
             "answer": "Sorry, I can only answer questions related to the uploaded medical report.",
             "citations": [],
+            "retrieval_metadata": metadata,
         }
 
     context = ""
@@ -173,6 +176,7 @@ async def ask(query:Query):
         "question": query.question,
         "answer": response.choices[0].message.content,
         "citations": citations,
+        "retrieval_metadata": metadata,
     }
 
 

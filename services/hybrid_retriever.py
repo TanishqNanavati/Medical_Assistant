@@ -1,33 +1,48 @@
 import os
 from copy import deepcopy
 from dotenv import load_dotenv
+import json
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
+
 from services.qdrantDB import qdrantDB
 from services.postgresDB import postgresDB
 from services.query_expander import queryExpander
+from services.retrieval_judge import retrievalJudge
+
+from config import settings
 load_dotenv()
 
+
 class HybridRetriever:
+
     def __init__(self):
-        model_name = os.getenv("RERANK_MODEL")
-        self.cross_encoder = CrossEncoder(model_name)
+        self.cross_encoder = CrossEncoder(
+            os.getenv("RERANK_MODEL")
+        )
 
+    def reciprocal_rank_fusion(self, dense, sparse, k=20):
 
-    def reciprocal_rank_fusion(self,dense,sparse,k=20):
-        scores={}
-        documents={}
-        for rank,(doc,_) in enumerate(dense):
-            key=(
+        scores = {}
+        documents = {}
+
+        # Dense
+        for rank, (doc, _) in enumerate(dense):
+
+            key = (
                 doc.page_content,
-                doc.metadata["page"]
+                doc.metadata["page"],
             )
-            
-            doc.metadata["retrieved_from"] = "Dense (Qdrant)"
-            documents[key] = doc
-            scores[key] = scores.get(key,0) + 1/(k+rank+1)
 
-        for rank,row in enumerate(sparse):
+            doc.metadata["retrieved_from"] = "Dense (Qdrant)"
+
+            documents[key] = doc
+
+            scores[key] = scores.get(key, 0) + 1 / (k + rank + 1)
+
+        # Sparse
+        for rank, row in enumerate(sparse):
+
             doc = Document(
                 page_content=row["content"],
                 metadata={
@@ -58,21 +73,30 @@ class HybridRetriever:
             reverse=True,
         )
 
-        result = []
+        return [
+            (documents[key], score)
+            for key, score in ranked
+        ]
 
-        for key,score in ranked:
-            result.append((documents[key],score)) # inserting tuple
 
-        return result
+    def retrieve(self,query,rrf_k=20,expand=True):
 
-    def search(self,query,k=5,rrf_k=20):
-        # We must pass the string (query.question), not the entire Pydantic Query object!
-        expanded_queries = queryExpander.expand(query.question)
+        if expand:
+            expanded_queries = queryExpander.expand(query.question)
 
-        print("Expanded queries : \n")
-        for q in expanded_queries:
-            print("-",q)
-        print("\n" + "="*50)
+            print("\nExpanded Queries")
+
+            for q in expanded_queries:
+                print("-", q)
+
+        else:
+
+            expanded_queries = [query.question]
+
+            print("\nUsing rewritten query")
+            print("-", query.question)
+
+        print("=" * 60)
 
         dense_all = []
         sparse_all = []
@@ -84,53 +108,189 @@ class HybridRetriever:
 
             dense = qdrantDB.similarity_search(
                 query=new_query,
-                k=rrf_k
+                k=rrf_k,
             )
 
             sparse = postgresDB.bm25_search(
                 query=new_query,
-                limit=rrf_k
+                limit=rrf_k,
             )
 
             dense_all.extend(dense)
             sparse_all.extend(sparse)
 
-        rrf = self.reciprocal_rank_fusion(  #reciprocal rank fusion
+        rrf = self.reciprocal_rank_fusion(
             dense_all,
             sparse_all,
         )
 
-        if not rrf:
-            return []
-
-        unique_docs = []
         seen = set()
+        unique = []
 
-        for doc,score in rrf:
+        for doc, score in rrf:
+
             key = (
                 doc.page_content,
-                doc.metadata.get("page"),
+                doc.metadata["page"],
             )
 
             if key not in seen:
                 seen.add(key)
-                unique_docs.append((doc,score))
+                unique.append((doc, score))
 
-        top_k = unique_docs[:rrf_k]
+        return unique[:rrf_k]
 
-        pairs = [[query.question,doc.page_content] for doc,_ in top_k]
 
-        cross_encoder_scores = self.cross_encoder.predict(pairs)
-        
+    def rerank(self,query,docs,k):
 
-        reranked_results = []
+        if not docs:
+            return []
 
-        for i,score in enumerate(cross_encoder_scores):
-            doc = top_k[i][0]
-            reranked_results.append((doc,float(score)))
+        pairs = [
+            [query.question, doc.page_content]
+            for doc, _ in docs
+        ]
 
-        reranked_results = sorted(reranked_results, key=lambda x: x[1], reverse=True)
+        scores = self.cross_encoder.predict(pairs)
 
-        return reranked_results[:k]
+        reranked = []
+
+        for (doc, _), score in zip(docs, scores):
+
+            reranked.append(
+                (
+                    doc,
+                    float(score),
+                )
+            )
+
+        reranked.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return reranked[:k]
+
+    def search(self, query, k=5):
+
+        retrieval_sizes = [20, 40, 60]
+        expand = True
+        retrieval_history = []
+        max_rounds = min(settings.max_rag_rounds, len(retrieval_sizes))
+
+        for round_idx in range(max_rounds):
+
+            retrieval_size = retrieval_sizes[round_idx]
+            print(f"\nRetrieving Top-{retrieval_size}")
+
+            docs = self.retrieve(
+                query=query,
+                rrf_k=retrieval_size,
+                expand=expand,
+            )
+
+            if not docs:
+                return {
+                    "docs": [], 
+                    "metadata": {
+                        "rounds": round_idx + 1, 
+                        "final_query": query.question, 
+                        "decision": "FAIL", 
+                        "confidence_score": 0.0, 
+                        "history": retrieval_history
+                    }
+                }
+
+            reranked = self.rerank(
+                query=query,
+                docs=docs,
+                k=15,
+            )
+
+            print("\nCrossEncoder Scores")
+
+            for _, score in reranked:
+                print(score)
+
+            confidence_score = max([score for _, score in reranked]) if reranked else 0.0
+
+            print("\nJudging Retrieval...")
+
+            judge = retrievalJudge.judge(
+                question=query.question,
+                docs=reranked,
+            )
+
+            print("\nDecision :", judge["decision"])
+            print("Reason   :", judge["reason"])
+
+            decision = judge["decision"].upper()
+            
+            retrieval_history.append({
+                "query": query.question,
+                "decision": decision,
+                "reason": judge["reason"],
+                "size": retrieval_size
+            })
+
+            # accept
+            if decision == "YES":
+
+                print("\nJudge accepted retrieval.")
+
+                return {
+                    "docs": reranked[:k],
+                    "metadata": {
+                        "rounds": round_idx + 1,
+                        "final_query": query.question,
+                        "decision": decision,
+                        "confidence_score": float(confidence_score),
+                        "history": retrieval_history
+                    }
+                }
+
+            # fail
+            if decision == "FAIL":
+
+                print("\nJudge says answer cannot be found.")
+
+                return {
+                    "docs": [],
+                    "metadata": {
+                        "rounds": round_idx + 1,
+                        "final_query": query.question,
+                        "decision": decision,
+                        "confidence_score": float(confidence_score),
+                        "history": retrieval_history
+                    }
+                }
+
+            # retry
+            improved_query = judge.get("improved_query", "").strip()
+
+            if improved_query:
+
+                print("\nImproved Query")
+
+                print(improved_query)
+
+                query = deepcopy(query)
+                query.question = improved_query
+
+            expand = True
+            print("\nRetrying Retrieval...\n")
+
+        print("\nMax RAG rounds reached. Returning best available documents.")
+        return {
+            "docs": reranked[:k],
+            "metadata": {
+                "rounds": max_rounds,
+                "final_query": query.question,
+                "decision": "MAX_RETRIES",
+                "confidence_score": float(confidence_score),
+                "history": retrieval_history
+            }
+        }
+
 
 hybridRetriever = HybridRetriever()

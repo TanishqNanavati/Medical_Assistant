@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
+import json
 
 load_dotenv()
 
@@ -26,11 +27,31 @@ class RetrievalJudge:
                 Retrieved Context:
                 {context}
 
-                Answer only YES or NO.
+               Return ONLY valid JSON.
 
-                YES = context contains enough information.
+                Example:
 
-                NO = retrieve again.
+                {{
+                "decision":"YES",
+                "reason":"The retrieved context answers the question.",
+                "improved_query":""
+                }}
+
+                or
+
+                {{
+                "decision":"RETRY",
+                "reason":"Retrieved chunks are about lab values instead of patient history.",
+                "improved_query":"Previous medical history and chronic illnesses"
+                }}
+
+                If the uploaded documents clearly cannot answer:
+
+                {{
+                "decision":"FAIL",
+                "reason":"The answer is not present in the uploaded documents.",
+                "improved_query":""
+                }}
                 """
 
         response = self.client.chat.completions.create(
@@ -44,8 +65,18 @@ class RetrievalJudge:
             temperature=0,
         )
 
-        answer = response.choices[0].message.content.strip().upper()
+        answer = response.choices[0].message.content.strip()
 
-        return answer.startswith("YES")
+        if answer.startswith("```json"):
+            answer = answer[7:]
+        elif answer.startswith("```"):
+            answer = answer[3:]
+        
+        if answer.endswith("```"):
+            answer = answer[:-3]
+            
+        answer = answer.strip()
+
+        return json.loads(answer)
 
 retrievalJudge = RetrievalJudge()
