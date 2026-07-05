@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     faithfulness_threshold: float = 0.70
     citation_threshold: float = 0.70
 
+    # Cache config
+    qdrant_cache_collection: str = "medical_assistant_semantic_cache"
+    semantic_cache_threshold: float = 0.85
+    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    cache_ttl_seconds: int = 86400  # 1 day
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

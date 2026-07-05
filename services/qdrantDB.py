@@ -32,20 +32,29 @@ class QdrantDB:
 
         collections = self.client.get_collections().collections
 
-        if settings.qdrant_collection not in [c.name for c in collections]:
-            dimension = len(embedder.model.embed_query("hello"))
+        collection_names = [c.name for c in collections]
+        dimension = len(embedder.model.embed_query("hello"))
+
+        if settings.qdrant_collection not in collection_names:
             self.client.create_collection(
                 collection_name=settings.qdrant_collection,
                 vectors_config=VectorParams(
-                    size=dimension, # dynamic collection of embedding dimension
+                    size=dimension,
                     distance=Distance.COSINE,
                 ),
             )
+            print(f"Collection '{self.collection_name}' created.")
 
-        else:
-            return
-
-        print(f"Collection '{self.collection_name}' created.")
+        # Semantic cache collection
+        if settings.qdrant_cache_collection not in collection_names:
+            self.client.create_collection(
+                collection_name=settings.qdrant_cache_collection,
+                vectors_config=VectorParams(
+                    size=dimension,
+                    distance=Distance.COSINE,
+                ),
+            )
+            print(f"Cache Collection '{settings.qdrant_cache_collection}' created.")
 
     def add_documents(self, docs):
         self.vector_store.add_documents(documents=docs)
@@ -55,6 +64,10 @@ class QdrantDB:
         from qdrant_client.models import Filter
         self.client.delete(
             collection_name=self.collection_name,
+            points_selector=Filter(),
+        )
+        self.client.delete(
+            collection_name=settings.qdrant_cache_collection,
             points_selector=Filter(),
         )
 

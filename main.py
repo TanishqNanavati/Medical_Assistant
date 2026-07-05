@@ -13,6 +13,7 @@ from services.qdrantDB import qdrantDB
 from services.postgresDB import postgresDB
 from services.hybrid_retriever import hybridRetriever
 from services.generation_judge import generationJudge
+from services.semantic_cache import semanticCache
 from config import settings
 
 
@@ -109,6 +110,13 @@ async def upload_file(
 
 @app.post("/ask")
 async def ask(query:Query):
+    # checking cache first
+
+    cached_response = semanticCache.get(query.question)
+    if cached_response:
+        return cached_response
+
+    # normal retrieval from vector db
     result = hybridRetriever.search(query=query, k=3)
     docs = result["docs"]
     metadata = result["metadata"]
@@ -207,12 +215,17 @@ async def ask(query:Query):
 
     metadata["eval_history"] = eval_history
 
-    return {
+    final_response = {
         "question": query.question,
         "answer": final_answer,
         "citations": citations,
         "retrieval_metadata": metadata,
     }
+
+    if decision == "PASS":
+        semanticCache.set(query.question,final_response)
+
+    return final_response
 
 
 
