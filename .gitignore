@@ -1,0 +1,115 @@
+# ===========================
+# Python
+# ===========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# ===========================
+# Virtual Environment
+# ===========================
+.venv/
+venv/
+env/
+ENV/
+
+# ===========================
+# Environment Variables
+# ===========================
+.env
+.env.*
+!.env.example
+
+# ===========================
+# IDEs
+# ===========================
+.vscode/
+.idea/
+*.iml
+
+# ===========================
+# OS Files
+# ===========================
+.DS_Store
+Thumbs.db
+
+# ===========================
+# Logs
+# ===========================
+*.log
+logs/
+
+# ===========================
+# Pytest / Coverage
+# ===========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# ===========================
+# Jupyter
+# ===========================
+.ipynb_checkpoints/
+
+# ===========================
+# Type Checkers
+# ===========================
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ===========================
+# Model Cache
+# ===========================
+.huggingface/
+.cache/huggingface/
+.cache/torch/
+.cache/pip/
+
+# ===========================
+# Vector Databases
+# ===========================
+faiss_index/
+vector_store/
+chroma/
+chromadb/
+db/
+
+# ===========================
+# Uploaded Documents
+# ===========================
+data/*
+!data/.gitkeep
+uploads/
+documents/
+data/raw/
+data/processed/
+
+# ===========================
+# Generated Files
+# ===========================
+*.sqlite3
+*.db
+*.pickle
+*.pkl
+*.npy
+*.npz
+
+# ===========================
+# Secrets
+# ===========================
+*.pem
+*.key
+*.crt

@@ -1,0 +1,55 @@
+.git
+.gitignore
+.dockerignore
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+
+# Environment Variables
+.env
+.env.*
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Data & Models
+data/
+uploads/
+documents/
+.huggingface/
+.cache/
+
+# Databases
+faiss_index/
+vector_store/
+chroma/
+chromadb/
+db/
+*.sqlite3
+*.db
+
+# Logs
+*.log
+logs/
+
+# Docker Files (Don't need to copy them inside the image)
+Dockerfile
+docker-compose.yml
+README.md
