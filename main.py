@@ -237,6 +237,9 @@ async def clear_all_data():
     # 2. Clear Qdrant
     qdrantDB.clear_data()
     
+    # 3. Clear Semantic Cache (Redis)
+    semanticCache.clear()
+    
     # 3. Clear PDF files in data directory
     for item in UPLOAD_DIR.iterdir():
         if item.is_file():

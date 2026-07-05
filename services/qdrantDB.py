@@ -60,16 +60,10 @@ class QdrantDB:
         self.vector_store.add_documents(documents=docs)
 
     def clear_data(self):
-        """Delete all points from Qdrant collection."""
-        from qdrant_client.models import Filter
-        self.client.delete(
-            collection_name=self.collection_name,
-            points_selector=Filter(),
-        )
-        self.client.delete(
-            collection_name=settings.qdrant_cache_collection,
-            points_selector=Filter(),
-        )
+        """Delete collections and recreate them to apply new dimensions if needed."""
+        self.client.delete_collection(collection_name=self.collection_name)
+        self.client.delete_collection(collection_name=settings.qdrant_cache_collection)
+        self.create_collection()
 
     def similarity_search(
         self, 

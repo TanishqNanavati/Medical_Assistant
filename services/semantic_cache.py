@@ -74,5 +74,9 @@ class SemanticCache:
 
         print(f"Cache stored with ID : {cache_id}\n")
 
+    def clear(self):
+        """Clear all semantic cache entries from Redis."""
+        self.redis_client.flushdb()
+
 
 semanticCache = SemanticCache()

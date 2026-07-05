@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # Cache config
     qdrant_cache_collection: str = "medical_assistant_semantic_cache"
-    semantic_cache_threshold: float = 0.85
+    semantic_cache_threshold: float = 0.80
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     cache_ttl_seconds: int = 86400  # 1 day
 
