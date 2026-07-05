@@ -26,7 +26,18 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
 
+  # Redis Cache Service
+  redis:
+    image: redis:7
+    container_name: redis_medical_rag
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
 # Named volumes for data persistence
 volumes:
   postgres_data:
   qdrant_storage:
+  redis_data:

@@ -12,6 +12,8 @@ from services.chunker import chunker
 from services.qdrantDB import qdrantDB
 from services.postgresDB import postgresDB
 from services.hybrid_retriever import hybridRetriever
+from services.generation_judge import generationJudge
+from config import settings
 
 
 load_dotenv()
@@ -158,23 +160,56 @@ async def ask(query:Query):
     Question : {query.question}
     """
 
-    response = client.chat.completions.create(
-        model=os.getenv("GEMINI_MODEL"),
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ],
-    )
+    final_answer = ""
+    eval_history = []
+
+    for eval_round in range(settings.max_rag_rounds):
+        
+        print(f"\nGenerating Answer (Round {eval_round + 1})...")
+        
+        response = client.chat.completions.create(
+            model=os.getenv("GEMINI_MODEL"),
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        
+        final_answer = response.choices[0].message.content
+        
+        print("\nEvaluating Generated Answer...")
+        eval_result = generationJudge.evaluate(
+            question=query.question, 
+            context=context, 
+            ans=final_answer
+        )
+        
+        decision = eval_result.get("decision", "FAIL").upper()
+        faithfulness = float(eval_result.get("faithfulness", 0.0))
+        feedback = eval_result.get("feedback", "No feedback provided.")
+        
+        print(f"Decision: {decision}, Faithfulness: {faithfulness}")
+        print(f"Feedback: {feedback}")
+        
+        eval_history.append({
+            "round": eval_round + 1,
+            "decision": decision,
+            "faithfulness": faithfulness,
+            "feedback": feedback
+        })
+
+        if decision == "PASS" and faithfulness >= settings.faithfulness_threshold:
+            print("Answer passed evaluation.")
+            break
+            
+        print("\nRewriting Answer based on feedback...")
+        user_prompt += f"\n\n--- PREVIOUS ATTEMPT FEEDBACK ---\nYour previous answer was rejected (Faithfulness: {faithfulness}). Reason: {feedback}\nPlease rewrite your answer and fix the mistakes."
+
+    metadata["eval_history"] = eval_history
 
     return {
         "question": query.question,
-        "answer": response.choices[0].message.content,
+        "answer": final_answer,
         "citations": citations,
         "retrieval_metadata": metadata,
     }

@@ -14,7 +14,7 @@ class RetrievalJudge:
 
     def judge(self,question,docs):
         context = "\n\n".join(
-            doc.page_content[:400]
+            doc.page_content
             for doc,_ in docs
         )
 
