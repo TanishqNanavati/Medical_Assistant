@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     cache_ttl_seconds: int = 86400  # 1 day
 
+    # Celery config
+    celery_broker_url: str = os.getenv("CELERY_BROKER_URL")
+    celery_result_backend: str = os.getenv("CELERY_RESULT_BACKEND")
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -36,8 +36,20 @@ services:
     volumes:
       - redis_data:/data
 
+  # RabbitMQ Broker for Celery
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq_medical_rag
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # Message broker port
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
 # Named volumes for data persistence
 volumes:
   postgres_data:
   qdrant_storage:
   redis_data:
+  rabbitmq_data:

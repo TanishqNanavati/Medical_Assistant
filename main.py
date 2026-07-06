@@ -9,8 +9,6 @@ from typing import Optional
 from models.document_type import DocumentType
 from models.query import Query
 from models.user import User
-from services.docs_loader import doc_loader
-from services.chunker import chunker
 from services.qdrantDB import qdrantDB
 from services.postgresDB import postgresDB
 from services.hybrid_retriever import hybridRetriever
@@ -19,6 +17,8 @@ from services.semantic_cache import semanticCache
 from services.auth import get_current_user, create_access_token, verify_password, get_password_hash
 from services.chat_memory import chat_memory
 from services.query_reformulator import queryReformulator
+from celery.result import AsyncResult
+from services.tasks import process_document_task, celery_app
 from config import settings
 
 
@@ -69,7 +69,7 @@ def home():
 
 
 @app.post("/register")
-async def register(user:User):
+def register(user:User):
     existing = postgresDB.get_user_by_username(user.username)
     if existing:
         raise HTTPException(status_code=400, detail="Username already taken")
@@ -78,7 +78,7 @@ async def register(user:User):
     return {"message": "User created successfully", "user_id": new_user["id"]}
 
 @app.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = postgresDB.get_user_by_username(form_data.username)
     if not user or not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
@@ -88,7 +88,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     
 
 @app.post("/upload")
-async def upload_file(
+def upload_file(
     file:UploadFile=File(...),
     document_type:DocumentType=Form(...),
     current_user: dict = Depends(get_current_user)
@@ -104,34 +104,35 @@ async def upload_file(
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    pages = doc_loader.load(filepath)
-
-    # Attaching meta data
-    for page in pages:
-        page.metadata["document_type"] = document_type.value
-        page.metadata["user_id"] = current_user["user_id"] 
-
-    chunks = chunker.chunk(pages)
-
-    qdrantDB.add_documents(chunks)
-    postgresDB.add_documents(chunks)
-
-    print("=" * 50)
-    print(chunks[0].metadata)
-    print("=" * 50)
+    task = process_document_task.delay(str(filepath),document_type.value,current_user["user_id"])
 
     return {
         "message": "PDF uploaded successfully.",
+        "task_id":task.id,
         "filename": file.filename,
         "document_type": document_type,
-        "user_id":current_user["user_id"],
-        "pages": len(pages),
-        "chunks": len(chunks),
+        "user_id":current_user["user_id"]
     }
 
 
+@app.get("/upload/status/{task_id}")
+def get_upload_status(task_id:str,current_user:dict=Depends(get_current_user)):
+    task_result = AsyncResult(task_id,app=celery_app)
+
+    result = {
+        "task_id":task_id,
+        "task_status":task_result.status
+    }
+
+    if task_result.status == "SUCCESS":
+        result["task_result"] = task_result.result
+    elif task_result.status == "FAILURE":
+        result["task_error"] = str(task_result.result)
+        
+    return result
+
 @app.post("/ask")
-async def ask(query:Query,current_user:dict = Depends(get_current_user)):
+def ask(query:Query,current_user:dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
     
     chat_history = []
@@ -269,7 +270,7 @@ async def ask(query:Query,current_user:dict = Depends(get_current_user)):
 
 
 @app.delete("/clear")
-async def clear_all_data(current_user: dict = Depends(get_current_user)):
+def clear_all_data(current_user: dict = Depends(get_current_user)):
     # 1. Clear PostgreSQL
     postgresDB.clear_data()
     
