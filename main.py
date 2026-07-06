@@ -17,6 +17,8 @@ from services.hybrid_retriever import hybridRetriever
 from services.generation_judge import generationJudge
 from services.semantic_cache import semanticCache
 from services.auth import get_current_user, create_access_token, verify_password, get_password_hash
+from services.chat_memory import chat_memory
+from services.query_reformulator import queryReformulator
 from config import settings
 
 
@@ -131,14 +133,31 @@ async def upload_file(
 @app.post("/ask")
 async def ask(query:Query,current_user:dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
-    # checking cache first
+    
+    chat_history = []
+    if query.session_id:
+        chat_history = chat_memory.get_history(user_id, query.session_id)
+        
+    search_question = query.question
+    if chat_history:
+        search_question = queryReformulator.reformulate(query.question, chat_history)
+        print(f"\nOriginal Question: {query.question}")
+        print(f"Reformulated Question: {search_question}")
 
-    cached_response = semanticCache.get(query.question,user_id=user_id)
+    cached_response = semanticCache.get(search_question, user_id=user_id)
     if cached_response:
+        if query.session_id:
+            chat_memory.add_turn(user_id, query.session_id, query.question, cached_response["answer"])
+        cached_response["question"] = query.question # Return original question to user
         return cached_response
 
-    # normal retrieval from vector db
-    result = hybridRetriever.search(query=query,user_id=user_id, k=3)
+    search_query_obj = Query(
+        question=search_question,
+        document_type=query.document_type,
+        session_id=query.session_id
+    )
+    
+    result = hybridRetriever.search(query=search_query_obj, user_id=user_id, k=3)
     docs = result["docs"]
     metadata = result["metadata"]
 
@@ -146,7 +165,6 @@ async def ask(query:Query,current_user:dict = Depends(get_current_user)):
     for doc, score in docs:
         print(score)
 
-    # CrossEncoder scores can be negative logits, so we remove the > 0.01 threshold!
     filtered_results = docs
 
     if not filtered_results:
@@ -158,11 +176,9 @@ async def ask(query:Query,current_user:dict = Depends(get_current_user)):
         }
 
     context = ""
-
     citations = []
 
     for index, (doc,score) in enumerate(filtered_results, start=1):
-        
         page = doc.metadata.get("page",0) + 1
         source = doc.metadata.get("source", "Unknown")
 
@@ -184,29 +200,31 @@ async def ask(query:Query,current_user:dict = Depends(get_current_user)):
     user_prompt = f"""
     Context : {context}
 
-    Question : {query.question}
+    Question : {search_question}
     """
 
     final_answer = ""
     eval_history = []
 
     for eval_round in range(settings.max_rag_rounds):
-        
         print(f"\nGenerating Answer (Round {eval_round + 1})...")
+        
+        # Build messages list and inject chat history
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for msg in chat_history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": user_prompt})
         
         response = client.chat.completions.create(
             model=os.getenv("GEMINI_MODEL"),
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,
         )
         
         final_answer = response.choices[0].message.content
         
         print("\nEvaluating Generated Answer...")
         eval_result = generationJudge.evaluate(
-            question=query.question, 
+            question=search_question, 
             context=context, 
             ans=final_answer
         )
@@ -235,14 +253,16 @@ async def ask(query:Query,current_user:dict = Depends(get_current_user)):
     metadata["eval_history"] = eval_history
 
     final_response = {
-        "question": query.question,
+        "question": query.question, 
         "answer": final_answer,
         "citations": citations,
         "retrieval_metadata": metadata,
     }
 
     if decision == "PASS":
-        semanticCache.set(query.question,final_response,user_id=user_id)
+        semanticCache.set(search_question, final_response, user_id=user_id)
+        if query.session_id:
+            chat_memory.add_turn(user_id, query.session_id, query.question, final_answer)
 
     return final_response
 
