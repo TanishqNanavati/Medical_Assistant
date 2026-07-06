@@ -1,8 +1,6 @@
 from langchain_qdrant import QdrantVectorStore
-
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams,Filter,FieldCondition,MatchValue
-
 from config import settings
 from services.embedder import embedder
 from models.query import Query
@@ -67,7 +65,8 @@ class QdrantDB:
 
     def similarity_search(
         self, 
-        query: Query, 
+        query: Query,
+        user_id:int,
         k: int = 5,
         ):
         conditions = []
@@ -81,20 +80,13 @@ class QdrantDB:
                 )
             )
 
-        if query.patient_id :
-            conditions.append(
-                FieldCondition(
-                    key="metadata.patient_id",
-                    match=MatchValue(value=query.patient_id),
-                )
-            )
-
-        search_filter = None
-
-        if conditions :
-            search_filter = Filter(
-                must=conditions,
-            )
+        conditions.append(
+            FieldCondition(key="metadata.user_id",match=MatchValue(value=user_id))
+        )
+        
+        search_filter = Filter(
+            must=conditions,
+        )
 
 
         return self.vector_store.similarity_search_with_score(

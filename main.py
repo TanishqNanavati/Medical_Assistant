@@ -1,12 +1,14 @@
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
-from fastapi import FastAPI, File, HTTPException, UploadFile, Form
+from fastapi import FastAPI, File, HTTPException, UploadFile, Form, Depends
+from fastapi.security import OAuth2PasswordRequestForm
 import shutil
 from pathlib import Path
 from typing import Optional
 from models.document_type import DocumentType
 from models.query import Query
+from models.user import User
 from services.docs_loader import doc_loader
 from services.chunker import chunker
 from services.qdrantDB import qdrantDB
@@ -14,6 +16,7 @@ from services.postgresDB import postgresDB
 from services.hybrid_retriever import hybridRetriever
 from services.generation_judge import generationJudge
 from services.semantic_cache import semanticCache
+from services.auth import get_current_user, create_access_token, verify_password, get_password_hash
 from config import settings
 
 
@@ -62,12 +65,31 @@ Rules:
 def home():
     return {"message": "Medical RAG API is running."}
 
+
+@app.post("/register")
+async def register(user:User):
+    existing = postgresDB.get_user_by_username(user.username)
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    hashed = get_password_hash(user.password)
+    new_user = postgresDB.create_user(user.username, hashed)
+    return {"message": "User created successfully", "user_id": new_user["id"]}
+
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = postgresDB.get_user_by_username(form_data.username)
+    if not user or not verify_password(form_data.password, user["hashed_password"]):
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    access_token = create_access_token(data={"sub": user["username"], "user_id": user["id"]})
+    return {"access_token": access_token, "token_type": "bearer"}
+    
+
 @app.post("/upload")
 async def upload_file(
     file:UploadFile=File(...),
     document_type:DocumentType=Form(...),
-    patient_id:Optional[str]=Form(None),
-    report_id:Optional[str]=Form(None),
+    current_user: dict = Depends(get_current_user)
     ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -85,8 +107,7 @@ async def upload_file(
     # Attaching meta data
     for page in pages:
         page.metadata["document_type"] = document_type.value
-        page.metadata["patient_id"] = patient_id
-        page.metadata["report_id"] = report_id
+        page.metadata["user_id"] = current_user["user_id"] 
 
     chunks = chunker.chunk(pages)
 
@@ -101,23 +122,23 @@ async def upload_file(
         "message": "PDF uploaded successfully.",
         "filename": file.filename,
         "document_type": document_type,
-        "patient_id": patient_id,
-        "report_id": report_id,
+        "user_id":current_user["user_id"],
         "pages": len(pages),
         "chunks": len(chunks),
     }
 
 
 @app.post("/ask")
-async def ask(query:Query):
+async def ask(query:Query,current_user:dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
     # checking cache first
 
-    cached_response = semanticCache.get(query.question)
+    cached_response = semanticCache.get(query.question,user_id=user_id)
     if cached_response:
         return cached_response
 
     # normal retrieval from vector db
-    result = hybridRetriever.search(query=query, k=3)
+    result = hybridRetriever.search(query=query,user_id=user_id, k=3)
     docs = result["docs"]
     metadata = result["metadata"]
 
@@ -144,13 +165,11 @@ async def ask(query:Query):
         
         page = doc.metadata.get("page",0) + 1
         source = doc.metadata.get("source", "Unknown")
-        retrieved_from = doc.metadata.get("retrieved_from", "Unknown")
 
         citations.append({
             "id": f"[{index}]",
             "page": page,
             "source": source,
-            "retrieved_from": retrieved_from,
             "score": round(score,3)
         })
 
@@ -223,14 +242,14 @@ async def ask(query:Query):
     }
 
     if decision == "PASS":
-        semanticCache.set(query.question,final_response)
+        semanticCache.set(query.question,final_response,user_id=user_id)
 
     return final_response
 
 
 
 @app.delete("/clear")
-async def clear_all_data():
+async def clear_all_data(current_user: dict = Depends(get_current_user)):
     # 1. Clear PostgreSQL
     postgresDB.clear_data()
     

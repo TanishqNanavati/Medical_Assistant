@@ -48,8 +48,7 @@ class HybridRetriever:
                 metadata={
                     "page": row["page"],
                     "source": row["source"],
-                    "patient_id": row["patient_id"],
-                    "report_id": row["report_id"],
+                    "user_id":row["user_id"],
                     "document_type": row["document_type"],
                 },
             )
@@ -79,7 +78,7 @@ class HybridRetriever:
         ]
 
 
-    def retrieve(self,query,rrf_k=20,expand=True):
+    def retrieve(self,query,user_id,rrf_k=20,expand=True):
 
         if expand:
             expanded_queries = queryExpander.expand(query.question)
@@ -108,11 +107,13 @@ class HybridRetriever:
 
             dense = qdrantDB.similarity_search(
                 query=new_query,
+                user_id=user_id,
                 k=rrf_k,
             )
 
             sparse = postgresDB.bm25_search(
                 query=new_query,
+                user_id=user_id,
                 limit=rrf_k,
             )
 
@@ -171,7 +172,7 @@ class HybridRetriever:
 
         return reranked[:k]
 
-    def search(self, query, k=5):
+    def search(self, query,user_id, k=5):
 
         retrieval_sizes = [20, 40, 60]
         expand = True
@@ -185,6 +186,7 @@ class HybridRetriever:
 
             docs = self.retrieve(
                 query=query,
+                user_id=user_id,
                 rrf_k=retrieval_size,
                 expand=expand,
             )
