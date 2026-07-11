@@ -5,18 +5,15 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, Form, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 import shutil
 from pathlib import Path
-from typing import Optional
 from models.document_type import DocumentType
 from models.query import Query
+from models.misc_query import MiscQuery
 from models.user import User
 from services.qdrantDB import qdrantDB
 from services.postgresDB import postgresDB
-from services.hybrid_retriever import hybridRetriever
-from services.generation_judge import generationJudge
 from services.semantic_cache import semanticCache
 from services.auth import get_current_user, create_access_token, verify_password, get_password_hash
-from services.chat_memory import chat_memory
-from services.query_reformulator import queryReformulator
+from services.langgraph_orchestration import rag_chain, process_misc_tools
 from celery.result import AsyncResult
 from services.tasks import process_document_task, celery_app
 from config import settings
@@ -132,141 +129,23 @@ def get_upload_status(task_id:str,current_user:dict=Depends(get_current_user)):
     return result
 
 @app.post("/ask")
-def ask(query:Query,current_user:dict = Depends(get_current_user)):
-    user_id = current_user["user_id"]
+def ask(query:Query, current_user:dict = Depends(get_current_user)):
     
-    chat_history = []
-    if query.session_id:
-        chat_history = chat_memory.get_history(user_id, query.session_id)
-        
-    search_question = query.question
-    if chat_history:
-        search_question = queryReformulator.reformulate(query.question, chat_history)
-        print(f"\nOriginal Question: {query.question}")
-        print(f"Reformulated Question: {search_question}")
-
-    cached_response = semanticCache.get(search_question, user_id=user_id)
-    if cached_response:
-        if query.session_id:
-            chat_memory.add_turn(user_id, query.session_id, query.question, cached_response["answer"])
-        cached_response["question"] = query.question # Return original question to user
-        return cached_response
-
-    search_query_obj = Query(
-        question=search_question,
-        document_type=query.document_type,
-        session_id=query.session_id
-    )
+    # 1. Execute the entire LCEL chain
+    result_state = rag_chain.invoke({
+        "query": query, 
+        "user_id": current_user["user_id"]
+    })
     
-    result = hybridRetriever.search(query=search_query_obj, user_id=user_id, k=3)
-    docs = result["docs"]
-    metadata = result["metadata"]
+    # 2. Return the final output
+    return result_state["final_response"]
 
-    print("\nRetrieved scores:")
-    for doc, score in docs:
-        print(score)
 
-    filtered_results = docs
-
-    if not filtered_results:
-        return {
-            "question": query.question,
-            "answer": "Sorry, I can only answer questions related to the uploaded medical report.",
-            "citations": [],
-            "retrieval_metadata": metadata,
-        }
-
-    context = ""
-    citations = []
-
-    for index, (doc,score) in enumerate(filtered_results, start=1):
-        page = doc.metadata.get("page",0) + 1
-        source = doc.metadata.get("source", "Unknown")
-
-        citations.append({
-            "id": f"[{index}]",
-            "page": page,
-            "source": source,
-            "score": round(score,3)
-        })
-
-        context += f"""
-        Citation ID: [{index}]
-        Page: {page}
-        Source: {source}
-        Text: {doc.page_content}
-        Similarity Score: {round(score,3)}
-        """
-
-    user_prompt = f"""
-    Context : {context}
-
-    Question : {search_question}
-    """
-
-    final_answer = ""
-    eval_history = []
-
-    for eval_round in range(settings.max_rag_rounds):
-        print(f"\nGenerating Answer (Round {eval_round + 1})...")
-        
-        # Build messages list and inject chat history
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for msg in chat_history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-        messages.append({"role": "user", "content": user_prompt})
-        
-        response = client.chat.completions.create(
-            model=os.getenv("GEMINI_MODEL"),
-            messages=messages,
-        )
-        
-        final_answer = response.choices[0].message.content
-        
-        print("\nEvaluating Generated Answer...")
-        eval_result = generationJudge.evaluate(
-            question=search_question, 
-            context=context, 
-            ans=final_answer
-        )
-        
-        decision = eval_result.get("decision", "FAIL").upper()
-        faithfulness = float(eval_result.get("faithfulness", 0.0))
-        feedback = eval_result.get("feedback", "No feedback provided.")
-        
-        print(f"Decision: {decision}, Faithfulness: {faithfulness}")
-        print(f"Feedback: {feedback}")
-        
-        eval_history.append({
-            "round": eval_round + 1,
-            "decision": decision,
-            "faithfulness": faithfulness,
-            "feedback": feedback
-        })
-
-        if decision == "PASS" and faithfulness >= settings.faithfulness_threshold:
-            print("Answer passed evaluation.")
-            break
-            
-        print("\nRewriting Answer based on feedback...")
-        user_prompt += f"\n\n--- PREVIOUS ATTEMPT FEEDBACK ---\nYour previous answer was rejected (Faithfulness: {faithfulness}). Reason: {feedback}\nPlease rewrite your answer and fix the mistakes."
-
-    metadata["eval_history"] = eval_history
-
-    final_response = {
-        "question": query.question, 
-        "answer": final_answer,
-        "citations": citations,
-        "retrieval_metadata": metadata,
-    }
-
-    if decision == "PASS":
-        semanticCache.set(search_question, final_response, user_id=user_id)
-        if query.session_id:
-            chat_memory.add_turn(user_id, query.session_id, query.question, final_answer)
-
-    return final_response
-
+@app.post("/tools")
+def run_tools(query: MiscQuery, current_user:dict = Depends(get_current_user)):
+    # Run the standalone tools process
+    result = process_misc_tools(query.question)
+    return result
 
 
 @app.delete("/clear")
