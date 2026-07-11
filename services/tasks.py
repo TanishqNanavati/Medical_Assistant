@@ -2,6 +2,7 @@ from celery import Celery
 import os
 from config import settings
 from services.docs_loader import doc_loader
+from services.image_processor import image_processor
 from services.chunker import chunker
 from services.qdrantDB import qdrantDB
 from services.postgresDB import postgresDB
@@ -26,7 +27,14 @@ celery_app.conf.update(
 def process_document_task(self,filepath:str,document_type:str,user_id:int):
     try:
         print(f"Starting background processing for {filepath}...")
-        pages = doc_loader.load(filepath)
+        
+        ext = filepath.lower().split('.')[-1]
+        if ext in ['png', 'jpg', 'jpeg']:
+            pages = image_processor.load(filepath)
+        elif ext == 'pdf':
+            pages = doc_loader.load(filepath)
+        else:
+            raise ValueError(f"Unsupported file format: {ext}")
 
         for page in pages:
             page.metadata["document_type"] = document_type

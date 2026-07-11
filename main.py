@@ -35,28 +35,7 @@ client = OpenAI(
     base_url=os.getenv("GEMINI_BASE_URL"),
 )
 
-# -------------------------
-# Prompt
-# -------------------------
-SYSTEM_PROMPT = """
-You are an experienced medical assistant.
 
-Explain medical reports in simple language.
-
-Rules:
-- Also ONLY answer if context is related to medical as you are a Medical Assistant.
-- If Question is not related to Medical then dont answer. Simply say ONLY ask questions related to medical reports.
-- Answer ONLY from the provided context.
-- Do not hallucinate.
-- Mention abnormal values first.
-- Explain findings in simple language.
-- Mention normal findings briefly.
-- Do NOT diagnose diseases.
-- Do NOT prescribe medications.
-- If the answer is not present in the context, clearly say so.
-- End with a short bullet list of important findings.
-- ALWAYS include inline citations in your answer using the provided Citation ID (e.g., [1], [2]) immediately after every claim or fact derived from the context.
-"""
 
 
 
@@ -90,10 +69,12 @@ def upload_file(
     document_type:DocumentType=Form(...),
     current_user: dict = Depends(get_current_user)
     ):
-    if not file.filename.lower().endswith(".pdf"):
+    
+    ext = file.filename.lower().split('.')[-1]
+    if ext not in ["pdf", "png", "jpg", "jpeg"]:
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are allowed.",
+            detail="Only PDF and Image (PNG, JPG, JPEG) files are allowed.",
         )
 
     filepath = UPLOAD_DIR/file.filename
@@ -167,4 +148,3 @@ def clear_all_data(current_user: dict = Depends(get_current_user)):
             shutil.rmtree(item)
             
     return {"message": "All database records and uploaded files cleared successfully."}
-
