@@ -216,12 +216,20 @@ def process_misc_tools(question: str) -> dict:
     
     if name in calc_tools:
         result = calc_tools[name].invoke(tool_call["args"])
-        return {
+        ans = {
             "question": question,
             "answer": result,
             "citations": [],
             "retrieval_metadata": {"route": name}
         }
+        ans["explanation"] = generate_explanation(
+            question=question,
+            answer=result,
+            context_docs=f"Tool Used: {name}\nArgs: {tool_call['args']}",
+            route=name,
+            confidence="100% (Deterministic Calculator)"
+        )
+        return ans
         
     return {
         "question": question,
@@ -377,10 +385,92 @@ def generate_and_eval_node(state: RAGState) -> dict:
     res = {"question": state["query"].question, "answer": final_answer, "citations": citations, "retrieval_metadata": meta}
     
     if decision == "PASS":
-        semanticCache.set(state["search_question"], res, user_id=state["user_id"])
         if state["query"].session_id:
             chat_memory.add_turn(state["user_id"], state["query"].session_id, state["query"].question, final_answer)
 
+    return {"final_response": res}
+
+
+def generate_explanation(question: str, answer: str, context_docs: str, route: str, confidence: str) -> dict:
+    prompt = f"""
+    You are an Explainability Agent for a Medical AI Assistant.
+    Your job is to explain HOW and WHY the AI arrived at its answer.
+    CRITICAL RULE: You MUST use EXTREMELY SIMPLE, everyday English. Do NOT use highly complicated words. Do NOT open an Oxford dictionary. Write as if you are explaining this to a young teenager who has no medical or technical background. Keep sentences short and simple.
+    
+    Question asked: {question}
+    Final Answer generated: {answer}
+    Routing Decision used: {route}
+    Confidence Score: {confidence}
+    Documents/Context used: {context_docs}
+    
+    Generate a JSON object with exactly these keys:
+    "why_this_answer": "Simple, easy to understand reason why this answer is correct based on the text.",
+    "why_these_documents": "Simple, easy to understand reason why we looked at these specific files or tools.",
+    "why_these_tools": "Simple, easy to understand reason why we chose the specific search method or calculator tool.",
+    "confidence": "Simple, easy to understand explanation of how sure we are in this answer and why.",
+    "evidence": "Exact, short quotes or facts from the text that prove the answer."
+    
+    OUTPUT EXACTLY A JSON OBJECT AND NOTHING ELSE.
+    """
+    
+    import json
+    try:
+        res = client.chat.completions.create(
+            model=os.getenv("GEMINI_MODEL"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        content = res.choices[0].message.content.strip()
+        if content.startswith("```json"):
+            content = content[7:-3].strip()
+        elif content.startswith("```"):
+            content = content[3:-3].strip()
+            
+        return json.loads(content)
+    except Exception as e:
+        print(f"Explainability failed: {e}")
+        return {
+            "why_this_answer": "Error generating explanation.",
+            "why_these_documents": "",
+            "why_these_tools": "",
+            "confidence": "",
+            "evidence": ""
+        }
+
+def explainability_node(state: RAGState) -> dict:
+    res = state.get("final_response", {})
+    if not res:
+        return {}
+        
+    route = state.get("route_decision", "rag")
+    docs = state.get("docs", [])
+    
+    context_docs = ""
+    for d_item in docs:
+        if isinstance(d_item, tuple) and len(d_item) == 2:
+            doc = d_item[0]
+            context_docs += f"Source: {doc.metadata.get('source', 'Unknown')}\nText: {doc.page_content}\n\n"
+        else:
+            doc = d_item
+            if hasattr(doc, "metadata"):
+                context_docs += f"Source: {doc.metadata.get('source', 'Unknown')}\nText: {doc.page_content}\n\n"
+        
+    meta = res.get("retrieval_metadata", {})
+    confidence = str(meta.get("confidence_score", "N/A"))
+    
+    explanation = generate_explanation(
+        question=res.get("question", ""),
+        answer=res.get("answer", ""),
+        context_docs=context_docs,
+        route=route,
+        confidence=confidence
+    )
+    
+    res["explanation"] = explanation
+    
+    if meta.get("decision") == "PASS" and not meta.get("cached"):
+        semanticCache.set(state["search_question"], res, user_id=state["user_id"])
+        
     return {"final_response": res}
 
 
@@ -397,6 +487,7 @@ workflow.add_node("cache_check", cache_check_node)
 workflow.add_node("retrieve", retrieve_node)
 workflow.add_node("generate", generate_and_eval_node)
 workflow.add_node("timeline", timeline_node)
+workflow.add_node("explainability", explainability_node)
 
 workflow.set_entry_point("get_history")
 workflow.add_edge("get_history", "agent_router")
@@ -411,7 +502,8 @@ workflow.add_edge("query_analyzer", "reformulate")
 workflow.add_edge("reformulate", "cache_check")
 workflow.add_conditional_edges("cache_check", route_after_cache, {"end": END, "retrieve": "retrieve"})
 workflow.add_edge("retrieve", "generate")
-workflow.add_edge("generate", END)
-workflow.add_edge("timeline", END)
+workflow.add_edge("generate", "explainability")
+workflow.add_edge("timeline", "explainability")
+workflow.add_edge("explainability", END)
 
 rag_chain = workflow.compile()
