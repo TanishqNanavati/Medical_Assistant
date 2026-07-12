@@ -1,12 +1,7 @@
 {
-  "username": "abc",
+  "username": "tanishq",
   "password": "123456"
-},
-{
-  "username": "def",
-  "password": "1234567890"
 }
-
 
 On first terminal:
 uvicorn app:main --reload  

@@ -1,6 +1,6 @@
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams,Filter,FieldCondition,MatchValue
+from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue, MatchAny
 from config import settings
 from services.embedder import embedder
 from models.query import Query
@@ -68,6 +68,7 @@ class QdrantDB:
         query: Query,
         user_id:int,
         k: int = 5,
+        target_sources: list = None
         ):
         conditions = []
         
@@ -83,6 +84,14 @@ class QdrantDB:
         conditions.append(
             FieldCondition(key="metadata.user_id",match=MatchValue(value=user_id))
         )
+        
+        if target_sources:
+            conditions.append(
+                FieldCondition(
+                    key="metadata.source",
+                    match=MatchAny(any=target_sources)
+                )
+            )
         
         search_filter = Filter(
             must=conditions,

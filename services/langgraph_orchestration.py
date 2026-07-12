@@ -30,6 +30,7 @@ class RAGState(TypedDict, total=False):
     retrieval_metadata: Optional[Dict[str, Any]]
     final_response: Optional[Dict[str, Any]]
     route_decision: Optional[str]
+    target_sources: Optional[List[str]]
 
 @tool
 def analyze_drug_interactions(medications: list[str]) -> str:
@@ -259,6 +260,49 @@ def reformulate_node(state: RAGState) -> dict:
         sq = queryReformulator.reformulate(sq, state["chat_history"])
     return {"search_question": sq}
 
+def query_analyzer_node(state: RAGState) -> dict:
+    candidates = postgresDB.get_candidate_documents(state["user_id"], state["query"].question)
+    if not candidates:
+        return {"target_sources": []}
+    
+    doc_context = "\n".join([f"Filename: {c['filename']}, Uploaded: {c['upload_timestamp']}, Summary: {c['summary']}" for c in candidates])
+    
+    prompt = f"""
+    The user asked: '{state["query"].question}'
+    
+    Here are the most relevant documents in their account:
+    {doc_context}
+    
+    Based on the user's question, determine if they are specifically asking about one or more of these documents. 
+    If they are, return a JSON list of exactly the filenames they mean, like ["sample.pdf", "heart-xray.jpg"].
+    If they are asking a general question without referring to specific documents (or if no documents match), return [].
+    OUTPUT EXACTLY A JSON LIST AND NOTHING ELSE.
+    """
+    
+    import json
+    try:
+        res = client.chat.completions.create(
+            model=os.getenv("GEMINI_MODEL"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        content = res.choices[0].message.content.strip()
+        if content.startswith("```json"):
+            content = content[7:-3].strip()
+        elif content.startswith("```"):
+            content = content[3:-3].strip()
+            
+        target_files = json.loads(content)
+        if isinstance(target_files, list) and target_files:
+            # Prepend 'data/' to match the source metadata format
+            target_sources = [f"data/{f}" for f in target_files]
+            return {"target_sources": target_sources}
+    except Exception as e:
+        print(f"Query analyzer failed: {e}")
+        pass
+        
+    return {"target_sources": []}
+
 def cache_check_node(state: RAGState) -> dict:
     cached = semanticCache.get(state["search_question"], user_id=state["user_id"])
     if cached:
@@ -270,7 +314,7 @@ def cache_check_node(state: RAGState) -> dict:
 
 def retrieve_node(state: RAGState) -> dict:
     q_obj = Query(question=state["search_question"], document_type=state["query"].document_type, session_id=state["query"].session_id)
-    res = hybridRetriever.search(query=q_obj, user_id=state["user_id"], k=3)
+    res = hybridRetriever.search(query=q_obj, user_id=state["user_id"], k=3, target_sources=state.get("target_sources"))
     return {"docs": res["docs"], "retrieval_metadata": res["metadata"]}
 
 
@@ -347,6 +391,7 @@ def route_after_cache(state: RAGState) -> str:
 workflow = StateGraph(RAGState)
 workflow.add_node("get_history", get_history_node)
 workflow.add_node("agent_router", agent_router_node)
+workflow.add_node("query_analyzer", query_analyzer_node)
 workflow.add_node("reformulate", reformulate_node)
 workflow.add_node("cache_check", cache_check_node)
 workflow.add_node("retrieve", retrieve_node)
@@ -359,9 +404,10 @@ workflow.add_edge("get_history", "agent_router")
 workflow.add_conditional_edges(
     "agent_router",
     lambda state: state["route_decision"],
-    {"rag": "reformulate", "timeline": "timeline", "end": END}
+    {"rag": "query_analyzer", "timeline": "timeline", "end": END}
 )
 
+workflow.add_edge("query_analyzer", "reformulate")
 workflow.add_edge("reformulate", "cache_check")
 workflow.add_conditional_edges("cache_check", route_after_cache, {"end": END, "retrieve": "retrieve"})
 workflow.add_edge("retrieve", "generate")

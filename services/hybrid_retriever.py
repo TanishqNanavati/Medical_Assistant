@@ -78,7 +78,7 @@ class HybridRetriever:
         ]
 
 
-    def retrieve(self,query,user_id,rrf_k=20,expand=True):
+    def retrieve(self,query,user_id,rrf_k=20,expand=True, target_sources=None):
 
         if expand:
             expanded_queries = queryExpander.expand(query.question)
@@ -109,12 +109,14 @@ class HybridRetriever:
                 query=new_query,
                 user_id=user_id,
                 k=rrf_k,
+                target_sources=target_sources
             )
 
             sparse = postgresDB.bm25_search(
                 query=new_query,
                 user_id=user_id,
                 limit=rrf_k,
+                target_sources=target_sources
             )
 
             dense_all.extend(dense)
@@ -172,7 +174,7 @@ class HybridRetriever:
 
         return reranked[:k]
 
-    def search(self, query,user_id, k=5):
+    def search(self, query,user_id, k=5, target_sources=None):
 
         retrieval_sizes = [20, 40, 60]
         expand = True
@@ -189,6 +191,7 @@ class HybridRetriever:
                 user_id=user_id,
                 rrf_k=retrieval_size,
                 expand=expand,
+                target_sources=target_sources
             )
 
             if not docs:

@@ -45,6 +45,25 @@ def process_document_task(self,filepath:str,document_type:str,user_id:int):
         qdrantDB.add_documents(chunks)
         postgresDB.add_documents(chunks)
 
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.getenv("GEMINI_API_KEY"),
+            base_url=os.getenv("GEMINI_BASE_URL"),
+        )
+        
+        full_text = "\n".join([p.page_content for p in pages])
+        # Generate summary
+        summary_res = client.chat.completions.create(
+            model=os.getenv("GEMINI_MODEL"),
+            messages=[
+                {"role": "system", "content": "You are a medical summarizer. Summarize the following medical document in 2-3 sentences max."},
+                {"role": "user", "content": full_text[:30000]}
+            ]
+        )
+        summary = summary_res.choices[0].message.content
+        filename = os.path.basename(filepath)
+        postgresDB.add_document(user_id, filename, document_type, summary)
+
         print("Background processing complete!")
         return {
             "status": "Success",
