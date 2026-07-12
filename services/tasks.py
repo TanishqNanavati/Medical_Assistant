@@ -28,6 +28,7 @@ def process_document_task(self,filepath:str,document_type:str,user_id:int):
     try:
         print(f"Starting background processing for {filepath}...")
         
+        self.update_state(state='PROGRESS', meta={'status': 'Extracting text...'})
         ext = filepath.lower().split('.')[-1]
         if ext in ['png', 'jpg', 'jpeg']:
             pages = image_processor.load(filepath)
@@ -40,8 +41,10 @@ def process_document_task(self,filepath:str,document_type:str,user_id:int):
             page.metadata["document_type"] = document_type
             page.metadata["user_id"] = user_id 
 
+        self.update_state(state='PROGRESS', meta={'status': 'Chunking document...'})
         chunks = chunker.chunk(pages)
         
+        self.update_state(state='PROGRESS', meta={'status': 'Generating embeddings and saving to DB...'})
         qdrantDB.add_documents(chunks)
         postgresDB.add_documents(chunks)
 
@@ -51,6 +54,7 @@ def process_document_task(self,filepath:str,document_type:str,user_id:int):
             base_url=os.getenv("GEMINI_BASE_URL"),
         )
         
+        self.update_state(state='PROGRESS', meta={'status': 'Generating summary...'})
         full_text = "\n".join([p.page_content for p in pages])
         # Generate summary
         summary_res = client.chat.completions.create(

@@ -116,3 +116,13 @@ data/processed/
 
 
 clear_data.py
+clear_cache.py
+
+# ===========================
+# Scratch & Local Test Scripts
+# ===========================
+test_*.py
+test_*.txt
+*.test.py
+temp_*.py
+scratch.py

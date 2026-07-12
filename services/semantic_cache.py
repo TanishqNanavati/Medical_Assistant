@@ -46,6 +46,8 @@ class SemanticCache:
             cached_data = self.redis_client.get(cache_id)
             if cached_data:
                 parsed_data = json.loads(cached_data)
+                if "retrieval_metadata" not in parsed_data:
+                    parsed_data["retrieval_metadata"] = {}
                 parsed_data["retrieval_metadata"]["cached"] = True
                 parsed_data["retrieval_metadata"]["similarity_score"] = best_match.score
                 return parsed_data

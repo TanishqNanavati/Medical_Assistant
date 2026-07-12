@@ -13,7 +13,8 @@ from models.query import Query
 from services.hybrid_retriever import hybridRetriever
 from services.generation_judge import generationJudge
 from services.semantic_cache import semanticCache
-from services.chat_memory import chat_memory
+import json
+
 from services.query_reformulator import queryReformulator
 from services.postgresDB import postgresDB
 from config import settings
@@ -31,6 +32,7 @@ class RAGState(TypedDict, total=False):
     final_response: Optional[Dict[str, Any]]
     route_decision: Optional[str]
     target_sources: Optional[List[str]]
+    telemetry: Optional[Dict[str, Any]]
 
 @tool
 def analyze_drug_interactions(medications: list[str]) -> str:
@@ -151,26 +153,48 @@ def calculate_chads2_vasc(age: int, gender: str, heart_failure: bool, hypertensi
     return f"CHA2DS2-VASc Score: {score}\nRecommendation: {rec}"
 
 @tool
-def generate_patient_timeline() -> str:
-    """Generates a timeline of the patient's medical history."""
-    return "timeline"
+def search_report(query: str):
+    """Use this tool to search for medical information in the patient's records."""
+    pass
 
 @tool
-def search_report(query: str) -> str:
-    """Searches the medical report."""
-    return "rag"
+def generate_patient_timeline(query: str):
+    """Use this tool when the user explicitly asks for a medical history timeline."""
+    pass
 
+@tool
+def casual_chat(query: str):
+    """Use this tool when the user is saying a greeting like 'hi', 'hello', or making casual small talk."""
+    pass
 
-# --- Nodes ---
+import time
 
 def get_history_node(state: RAGState) -> dict:
     q = state["query"]
-    history = chat_memory.get_history(state["user_id"], q.session_id) if q.session_id else []
-    return {"chat_history": history}
+    history = postgresDB.get_chat_history(q.session_id, state["user_id"]) if q.session_id else []
+    
+    # Initialize telemetry
+    telemetry = {
+        "start_time": time.time(),
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "embedding_time_ms": 0.0,
+        "retrieval_time_ms": 0.0,
+        "llm_time_ms": 0.0,
+        "query_rewritten": False,
+        "cache_hit": False,
+        "num_retrieved_chunks": 0,
+        "retrieval_source": "None",
+        "avg_retrieval_score": 0.0,
+        "judge_decision": "N/A",
+        "faithfulness_score": 0.0,
+        "context_length_tokens": 0
+    }
+    return {"chat_history": history, "telemetry": telemetry}
 
 def agent_router_node(state: RAGState) -> dict:
     llm = ChatGoogleGenerativeAI(model=os.getenv("GEMINI_MODEL"), api_key=os.getenv("GEMINI_API_KEY"))
-    tools = [search_report, generate_patient_timeline]
+    tools = [search_report, generate_patient_timeline, casual_chat]
     
     response = llm.bind_tools(tools).invoke(state["query"].question)
     
@@ -178,9 +202,11 @@ def agent_router_node(state: RAGState) -> dict:
         return {"route_decision": "rag"}
         
     name = response.tool_calls[0]["name"]
-        
+    
     if name == "generate_patient_timeline":
         return {"route_decision": "timeline"}
+    elif name == "casual_chat":
+        return {"route_decision": "casual"}
         
     return {"route_decision": "rag"}
 
@@ -215,17 +241,29 @@ def process_misc_tools(question: str) -> dict:
     }
     
     if name in calc_tools:
-        result = calc_tools[name].invoke(tool_call["args"])
+        raw_result = calc_tools[name].invoke(tool_call["args"])
+        
+        # Elaborate the raw result using LLM
+        elaborate_prompt = f"The user asked: '{question}'. The medical calculator tool returned: '{raw_result}'. Please write a friendly, elaborate, and easy-to-understand response explaining this result to the patient. Use Markdown formatting. Keep it very clear and empathetic."
+        elaborated_msg = llm.invoke(elaborate_prompt)
+        
+        # Ensure elaborated_result is a string (Gemini sometimes returns a list of text parts)
+        elaborated_result = elaborated_msg.content
+        if isinstance(elaborated_result, list):
+            elaborated_result = "".join([str(x.get("text", x)) if isinstance(x, dict) else str(x) for x in elaborated_result])
+        elif not isinstance(elaborated_result, str):
+            elaborated_result = str(elaborated_result)
+
         ans = {
             "question": question,
-            "answer": result,
+            "answer": elaborated_result,
             "citations": [],
             "retrieval_metadata": {"route": name}
         }
         ans["explanation"] = generate_explanation(
             question=question,
-            answer=result,
-            context_docs=f"Tool Used: {name}\nArgs: {tool_call['args']}",
+            answer=elaborated_result,
+            context_docs=f"Tool Used: {name}\nArgs: {tool_call['args']}\nRaw Tool Result: {raw_result}",
             route=name,
             confidence="100% (Deterministic Calculator)"
         )
@@ -246,27 +284,67 @@ def timeline_node(state: RAGState) -> dict:
         text = "\n\n".join([r[0] for r in cur.fetchall()])
         
     if not text:
-        return {"final_response": {"question": state["query"].question, "answer": "No documents found.", "citations": []}}
+        ans = {
+            "question": state["query"].question,
+            "answer": "No medical records found to generate a timeline.",
+            "citations": [],
+            "retrieval_metadata": {"route": "timeline"}
+        }
+        return {"final_response": ans}
         
     prompt = f"Extract all medical events, diagnoses, and labs from the report and format as a chronological markdown timeline.\n\n{text}"
+    
+    import json
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.getenv("GEMINI_API_KEY"),
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+    
     response = client.chat.completions.create(
         model=os.getenv("GEMINI_MODEL"),
         messages=[{"role": "user", "content": prompt}]
     )
     
-    return {"final_response": {
+    ans = {
         "question": state["query"].question,
         "answer": response.choices[0].message.content,
         "citations": [],
         "retrieval_metadata": {"route": "timeline"}
-    }}
+    }
+    return {"final_response": ans}
 
+def casual_chat_node(state: RAGState) -> dict:
+    ans = {
+        "question": state["query"].question,
+        "answer": "Hello! I am your AI Medical Assistant. How can I help you with your medical records today?",
+        "citations": [],
+        "retrieval_metadata": {"route": "casual"},
+        "explanation": {
+            "why_this_answer": "You greeted me, so I said hello back!",
+            "why_these_documents": "No medical documents were needed for a simple greeting.",
+            "why_these_tools": "We didn't need to use any search tools.",
+            "confidence": "100% sure this is a friendly greeting.",
+            "evidence": "N/A"
+        }
+    }
+    
+    # Save the complete result to database history
+    if state["query"].session_id:
+        postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "user", state["query"].question)
+        postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "assistant", json.dumps(ans))
+        
+    return {"final_response": ans, "cached_response": ans}
 
 def reformulate_node(state: RAGState) -> dict:
     sq = state["query"].question
+    telemetry = state.get("telemetry", {})
     if state.get("chat_history"):
-        sq = queryReformulator.reformulate(sq, state["chat_history"])
-    return {"search_question": sq}
+        new_sq = queryReformulator.reformulate(sq, state["chat_history"])
+        if new_sq != sq:
+            telemetry["query_rewritten"] = True
+        sq = new_sq
+    return {"search_question": sq, "telemetry": telemetry}
 
 def query_analyzer_node(state: RAGState) -> dict:
     candidates = postgresDB.get_candidate_documents(state["user_id"], state["query"].question)
@@ -312,18 +390,38 @@ def query_analyzer_node(state: RAGState) -> dict:
     return {"target_sources": []}
 
 def cache_check_node(state: RAGState) -> dict:
+    t0 = time.time()
     cached = semanticCache.get(state["search_question"], user_id=state["user_id"])
+    telemetry = state.get("telemetry", {})
+    telemetry["retrieval_time_ms"] += (time.time() - t0) * 1000
+    
     if cached:
+        telemetry["cache_hit"] = True
+        telemetry["retrieval_source"] = "Cache"
         if state["query"].session_id:
-            chat_memory.add_turn(state["user_id"], state["query"].session_id, state["query"].question, cached["answer"])
+            postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "user", state["query"].question)
+            postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "assistant", cached["answer"])
         cached["question"] = state["query"].question
-        return {"cached_response": cached, "final_response": cached}
-    return {"cached_response": None}
+        return {"cached_response": cached, "final_response": cached, "telemetry": telemetry}
+    return {"cached_response": None, "telemetry": telemetry}
 
 def retrieve_node(state: RAGState) -> dict:
+    t0 = time.time()
     q_obj = Query(question=state["search_question"], document_type=state["query"].document_type, session_id=state["query"].session_id)
-    res = hybridRetriever.search(query=q_obj, user_id=state["user_id"], k=3, target_sources=state.get("target_sources"))
-    return {"docs": res["docs"], "retrieval_metadata": res["metadata"]}
+    res = hybridRetriever.search(query=q_obj, user_id=state["user_id"], k=10, target_sources=state.get("target_sources"))
+    
+    telemetry = state.get("telemetry", {})
+    telemetry["retrieval_time_ms"] += (time.time() - t0) * 1000
+    telemetry["num_retrieved_chunks"] = len(res["docs"])
+    
+    # Estimate source based on scores (Hybrid usually has 0.7-0.9 scores, BM25 has integers, dense has cosines)
+    telemetry["retrieval_source"] = "Hybrid" # Hybrid is default in search
+    
+    scores = [score for _, score in res["docs"]]
+    if scores:
+        telemetry["avg_retrieval_score"] = sum(scores) / len(scores)
+        
+    return {"docs": res["docs"], "retrieval_metadata": res["metadata"], "telemetry": telemetry}
 
 
 client = OpenAI(api_key=os.getenv("GEMINI_API_KEY"), base_url=os.getenv("GEMINI_BASE_URL"))
@@ -364,10 +462,18 @@ def generate_and_eval_node(state: RAGState) -> dict:
     decision, final_answer = "FAIL", ""
     eval_hist = []
 
+    telemetry = state.get("telemetry", {})
+    t0 = time.time()
+    
     for _ in range(settings.max_rag_rounds):
         msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + [{"role": m["role"], "content": m["content"]} for m in history] + [{"role": "user", "content": prompt}]
-        final_answer = client.chat.completions.create(model=os.getenv("GEMINI_MODEL"), messages=msgs).choices[0].message.content
+        response = client.chat.completions.create(model=os.getenv("GEMINI_MODEL"), messages=msgs)
+        final_answer = response.choices[0].message.content
         
+        if hasattr(response, "usage") and response.usage:
+            telemetry["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0)
+            telemetry["completion_tokens"] += getattr(response.usage, "completion_tokens", 0)
+            
         eval_res = generationJudge.evaluate(question=state["search_question"], context=context, ans=final_answer)
         decision = eval_res.get("decision", "FAIL").upper()
         faithfulness = float(eval_res.get("faithfulness", 0.0))
@@ -379,16 +485,16 @@ def generate_and_eval_node(state: RAGState) -> dict:
             
         prompt += f"\n\nPrevious answer rejected. Fix mistakes: {eval_res.get('feedback', '')}"
 
+    telemetry["llm_time_ms"] += (time.time() - t0) * 1000
+    telemetry["judge_decision"] = decision
+    telemetry["faithfulness_score"] = faithfulness
+    telemetry["context_length_tokens"] = len(context.split()) * 1.3 # Rough estimate
+
     meta = state.get("retrieval_metadata", {})
     meta["eval_history"] = eval_hist
 
     res = {"question": state["query"].question, "answer": final_answer, "citations": citations, "retrieval_metadata": meta}
-    
-    if decision == "PASS":
-        if state["query"].session_id:
-            chat_memory.add_turn(state["user_id"], state["query"].session_id, state["query"].question, final_answer)
-
-    return {"final_response": res}
+    return {"final_response": res, "telemetry": telemetry}
 
 
 def generate_explanation(question: str, answer: str, context_docs: str, route: str, confidence: str) -> dict:
@@ -468,10 +574,58 @@ def explainability_node(state: RAGState) -> dict:
     
     res["explanation"] = explanation
     
-    if meta.get("decision") == "PASS" and not meta.get("cached"):
-        semanticCache.set(state["search_question"], res, user_id=state["user_id"])
+    # Save the complete result to database history
+    if state["query"].session_id:
+        postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "user", state["query"].question)
+        postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "assistant", json.dumps(res))
+    
+    # Cache the final response WITH the explanation
+    semanticCache.set(state["search_question"], res, user_id=state["user_id"])
         
     return {"final_response": res}
+
+def log_telemetry_node(state: RAGState) -> dict:
+    print("DEBUG LOG TELEMETRY NODE STATE:", state.get("telemetry"))
+    telemetry = state.get("telemetry", {})
+    if not telemetry or "start_time" not in telemetry:
+        print("DEBUG TELEMETRY EARLY RETURN")
+        return {}
+        
+    total_time_ms = (time.time() - telemetry["start_time"]) * 1000
+    
+    # Estimate time saved if cache hit
+    time_saved_ms = 0.0
+    if telemetry.get("cache_hit"):
+        time_saved_ms = 3100.0 - total_time_ms # Estimated 3.1s for average RAG without cache
+        if time_saved_ms < 0: time_saved_ms = 0.0
+        
+    data = {
+        "user_id": state["user_id"],
+        "session_id": state["query"].session_id,
+        "query": state["query"].question,
+        "embedding_time_ms": telemetry.get("embedding_time_ms", 0),
+        "retrieval_time_ms": telemetry.get("retrieval_time_ms", 0),
+        "llm_time_ms": telemetry.get("llm_time_ms", 0),
+        "total_time_ms": total_time_ms,
+        "prompt_tokens": telemetry.get("prompt_tokens", 0),
+        "completion_tokens": telemetry.get("completion_tokens", 0),
+        "retrieval_source": telemetry.get("retrieval_source", "None"),
+        "avg_retrieval_score": telemetry.get("avg_retrieval_score", 0),
+        "num_retrieved_chunks": telemetry.get("num_retrieved_chunks", 0),
+        "query_rewritten": telemetry.get("query_rewritten", False),
+        "judge_decision": telemetry.get("judge_decision", "N/A"),
+        "faithfulness_score": telemetry.get("faithfulness_score", 0),
+        "context_length_tokens": int(telemetry.get("context_length_tokens", 0)),
+        "cache_hit": telemetry.get("cache_hit", False),
+        "time_saved_ms": time_saved_ms
+    }
+    
+    try:
+        postgresDB.log_telemetry(data)
+    except Exception as e:
+        print(f"Failed to log telemetry: {e}")
+        
+    return {}
 
 
 def route_after_cache(state: RAGState) -> str:
@@ -487,7 +641,9 @@ workflow.add_node("cache_check", cache_check_node)
 workflow.add_node("retrieve", retrieve_node)
 workflow.add_node("generate", generate_and_eval_node)
 workflow.add_node("timeline", timeline_node)
+workflow.add_node("casual", casual_chat_node)
 workflow.add_node("explainability", explainability_node)
+workflow.add_node("log_telemetry", log_telemetry_node)
 
 workflow.set_entry_point("get_history")
 workflow.add_edge("get_history", "agent_router")
@@ -495,15 +651,17 @@ workflow.add_edge("get_history", "agent_router")
 workflow.add_conditional_edges(
     "agent_router",
     lambda state: state["route_decision"],
-    {"rag": "query_analyzer", "timeline": "timeline", "end": END}
+    {"rag": "query_analyzer", "timeline": "timeline", "casual": "casual", "end": "log_telemetry"}
 )
 
 workflow.add_edge("query_analyzer", "reformulate")
 workflow.add_edge("reformulate", "cache_check")
-workflow.add_conditional_edges("cache_check", route_after_cache, {"end": END, "retrieve": "retrieve"})
+workflow.add_conditional_edges("cache_check", route_after_cache, {"end": "log_telemetry", "retrieve": "retrieve"})
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", "explainability")
 workflow.add_edge("timeline", "explainability")
-workflow.add_edge("explainability", END)
+workflow.add_edge("casual", "log_telemetry")
+workflow.add_edge("explainability", "log_telemetry")
+workflow.add_edge("log_telemetry", END)
 
 rag_chain = workflow.compile()
