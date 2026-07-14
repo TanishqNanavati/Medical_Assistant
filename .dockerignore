@@ -1,3 +1,4 @@
+# Git
 .git
 .gitignore
 .dockerignore
@@ -15,6 +16,8 @@ __pycache__/
 *.so
 .pytest_cache/
 .coverage
+.mypy_cache/
+.ruff_cache/
 
 # Environment Variables
 .env
@@ -29,14 +32,15 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Data & Models
+# Data, Uploads, & Models
 data/
 uploads/
 documents/
 .huggingface/
 .cache/
+models/
 
-# Databases
+# Databases & Vector Stores
 faiss_index/
 vector_store/
 chroma/
@@ -49,7 +53,25 @@ db/
 *.log
 logs/
 
-# Docker Files (Don't need to copy them inside the image)
+# Testing & Scratch Scripts
+test_*.py
+test_*.txt
+*.test.py
+temp_*.py
+scratch.py
+clear_data.py
+clear_cache.py
+
+# Frontend Cache & Node Modules
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/.vercel/
+frontend/npm-debug.log*
+
+# Docker & Meta Files
 Dockerfile
 docker-compose.yml
 README.md
