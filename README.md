@@ -55,49 +55,72 @@ A massive, built-in analytics dashboard tracks every metric of the AI's performa
 
 ---
 
-## 🚀 How to Run the Project (Local Development)
+## 🚀 How to Run the Project
 
-### Prerequisites
-Make sure you have running instances of PostgreSQL, Qdrant (port 6333), and Redis (port 6379). Also, configure your `.env` file with `GEMINI_API_KEY`, OCR API Keys, and your database URIs.
+You can run this project in three different ways depending on your preference. For all methods, ensure you have a `.env` file in the root directory containing your `GEMINI_API_KEY` and other necessary configurations.
 
-### 1. Start the FastAPI Backend
-Open a terminal and run the main application server:
+### Option 1: The Quickest Way (Pre-Built Docker Image)
+If you just want to run the application without dealing with source code or local environments, use the pre-built image from Docker Hub.
+
+1. Create a `docker-compose.yml` file and paste the configuration (ensuring the app service uses `image: nana993/medical-assistant:latest` and does not contain `build: .`).
+2. Run the following commands in the directory where you saved the file:
 ```bash
+# Pull the latest image
+docker pull nana993/medical-assistant:latest
+
+# Start all containers in the background
+docker-compose up -d
+```
+*Your backend will be accessible at `http://localhost:8000` and the frontend dashboard at `http://localhost:3001` (mapped to 3001 to avoid Windows port conflicts).*
+
+---
+
+### Option 2: Build from Source (Docker Compose)
+If you've cloned the GitHub repository and want to build the Docker image locally from the source code:
+
+1. Clone the repository and navigate into it:
+```bash
+git clone https://github.com/yourusername/medical-assistant.git
+cd medical-assistant
+```
+2. Run Docker Compose with the build flag. (Make sure your `docker-compose.yml` includes `build: .` under the `app` service):
+```bash
+docker-compose up -d --build
+```
+
+---
+
+### Option 3: Manual Local Development (No Docker for the App)
+If you want to run the FastAPI backend, Celery worker, and Next.js frontend manually on your host machine for active development:
+
+**Prerequisites:** 
+You must have running instances of PostgreSQL, Qdrant (port 6333), RabbitMQ, and Redis (port 6379) accessible to your host.
+
+**1. Start the FastAPI Backend**
+```bash
+# Create and activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the server
 uvicorn main:app --reload
 ```
-*Note: The API runs on `http://localhost:8000`.*
+*The API will run on `http://localhost:8000`.*
 
-### 2. Start the Celery Worker
-Open a **second terminal** to handle background document processing:
+**2. Start the Celery Worker**
+Open a **second terminal** (ensure virtual environment is activated):
 ```bash
 celery -A services.tasks worker --loglevel=info --pool=solo
 ```
 
-### 3. Start the Next.js Frontend
-Open a **third terminal**, navigate to the frontend directory, and run the client:
+**3. Start the Next.js Frontend**
+Open a **third terminal**, navigate to the frontend directory:
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
-*Note: The Frontend runs on `http://localhost:3000`.*
-
----
-
-## 🐳 Deploying with Docker (Recommended)
-
-You can easily run the entire ecosystem (Databases, Backend, Celery Worker, and Frontend) using Docker. The application image is hosted on Docker Hub for easy distribution.
-
-### 1. Configure Environment
-Ensure you have a `.env` file in the root directory with your API keys (e.g., `GEMINI_API_KEY`).
-
-### 2. Run with Docker Compose
-Simply download the `docker-compose.yml` file and run:
-```bash
-docker-compose up -d
-```
-This command will:
-1. Automatically pull the pre-built `nana993/medical-assistant:latest` image from Docker Hub.
-2. Spin up isolated instances of **PostgreSQL**, **Qdrant**, **Redis**, and **RabbitMQ**.
-3. Connect the application directly to the internal database network.
-
-*Your backend will be accessible at `http://localhost:8000` and the frontend dashboard at `http://localhost:3000`.*
+*The Frontend will run on `http://localhost:3000`.*

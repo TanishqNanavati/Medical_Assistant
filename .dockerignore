@@ -38,7 +38,6 @@ uploads/
 documents/
 .huggingface/
 .cache/
-models/
 
 # Databases & Vector Stores
 faiss_index/
