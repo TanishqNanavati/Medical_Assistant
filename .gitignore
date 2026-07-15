@@ -126,3 +126,4 @@ test_*.txt
 *.test.py
 temp_*.py
 scratch.py
+medical_assistant_workflow.png
