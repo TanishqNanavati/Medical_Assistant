@@ -13,15 +13,17 @@ class SemanticCache:
             decode_responses=True
         )
 
-    def get(self,question:str,user_id:int):
+    def get(self,question:str,user_id:int,session_id:str=None):
         print("Checking semantic cache ...\n")
 
         # creating embeddings of incoming collection
         query_vector = embedder.model.embed_query(question)
 
-        search_filter = Filter(
-            must=[FieldCondition(key="user_id",match=MatchValue(value=user_id))]
-        )
+        conditions = [FieldCondition(key="user_id",match=MatchValue(value=user_id))]
+        if session_id:
+            conditions.append(FieldCondition(key="session_id",match=MatchValue(value=session_id)))
+
+        search_filter = Filter(must=conditions)
 
         # searching through qdrant collection for past similar question (similar embeddings)
         query_response = qdrantDB.client.query_points(
@@ -58,15 +60,23 @@ class SemanticCache:
         print("Cache Miss!")
         return None
 
-    def set(self,question:str,payload:dict,user_id:int):
+    def set(self,question:str,payload:dict,user_id:int,session_id:str=None):
         cache_id = str(uuid.uuid4()) # For generating unique id
 
         query_vector = embedder.model.embed_query(question)
 
+        point_payload = {
+            "cache_id": cache_id,
+            "original_question": question,
+            "user_id": user_id
+        }
+        if session_id:
+            point_payload["session_id"] = session_id
+
         point = PointStruct(
             id=cache_id,
             vector=query_vector,
-            payload={"cache_id":cache_id,"original_question":question,"user_id":user_id}
+            payload=point_payload
         )
         qdrantDB.client.upsert(
             collection_name=settings.qdrant_cache_collection,

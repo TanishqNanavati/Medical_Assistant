@@ -24,9 +24,9 @@ celery_app.conf.update(
 
 
 @celery_app.task(bind=True,name="process_document_task")
-def process_document_task(self,filepath:str,document_type:str,user_id:int):
+def process_document_task(self,filepath:str,document_type:str,user_id:int,session_id:str=None):
     try:
-        print(f"Starting background processing for {filepath}...")
+        print(f"Starting background processing for {filepath} (session_id={session_id})...")
         
         self.update_state(state='PROGRESS', meta={'status': 'Extracting text...'})
         ext = filepath.lower().split('.')[-1]
@@ -40,6 +40,8 @@ def process_document_task(self,filepath:str,document_type:str,user_id:int):
         for page in pages:
             page.metadata["document_type"] = document_type
             page.metadata["user_id"] = user_id 
+            if session_id:
+                page.metadata["session_id"] = session_id
 
         self.update_state(state='PROGRESS', meta={'status': 'Chunking document...'})
         chunks = chunker.chunk(pages)
@@ -66,7 +68,7 @@ def process_document_task(self,filepath:str,document_type:str,user_id:int):
         )
         summary = summary_res.choices[0].message.content
         filename = os.path.basename(filepath)
-        postgresDB.add_document(user_id, filename, document_type, summary)
+        postgresDB.add_document(user_id, filename, document_type, summary, session_id=session_id)
 
         print("Background processing complete!")
         return {

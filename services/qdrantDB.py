@@ -84,6 +84,11 @@ class QdrantDB:
         conditions.append(
             FieldCondition(key="metadata.user_id",match=MatchValue(value=user_id))
         )
+
+        if query.session_id:
+            conditions.append(
+                FieldCondition(key="metadata.session_id", match=MatchValue(value=query.session_id))
+            )
         
         if target_sources:
             conditions.append(

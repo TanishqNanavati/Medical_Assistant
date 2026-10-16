@@ -279,14 +279,21 @@ def process_misc_tools(question: str) -> dict:
 
 def timeline_node(state: RAGState) -> dict:
     with postgresDB.conn.cursor() as cur:
-        cur.execute("SELECT content FROM chunks WHERE user_id=%s AND document_type=%s", 
-                   (state["user_id"], state["query"].document_type.value))
+        sql = "SELECT content FROM chunks WHERE user_id=%s"
+        params = [state["user_id"]]
+        if state["query"].session_id:
+            sql += " AND session_id=%s"
+            params.append(state["query"].session_id)
+        if state["query"].document_type:
+            sql += " AND document_type=%s"
+            params.append(state["query"].document_type.value)
+        cur.execute(sql, tuple(params))
         text = "\n\n".join([r[0] for r in cur.fetchall()])
         
     if not text:
         ans = {
             "question": state["query"].question,
-            "answer": "No medical records found to generate a timeline.",
+            "answer": "No medical records found in this chat to generate a timeline.",
             "citations": [],
             "retrieval_metadata": {"route": "timeline"}
         }
@@ -347,7 +354,11 @@ def reformulate_node(state: RAGState) -> dict:
     return {"search_question": sq, "telemetry": telemetry}
 
 def query_analyzer_node(state: RAGState) -> dict:
-    candidates = postgresDB.get_candidate_documents(state["user_id"], state["query"].question)
+    candidates = postgresDB.get_candidate_documents(
+        user_id=state["user_id"], 
+        query=state["query"].question,
+        session_id=state["query"].session_id
+    )
     if not candidates:
         return {"target_sources": []}
     
@@ -391,7 +402,11 @@ def query_analyzer_node(state: RAGState) -> dict:
 
 def cache_check_node(state: RAGState) -> dict:
     t0 = time.time()
-    cached = semanticCache.get(state["search_question"], user_id=state["user_id"])
+    cached = semanticCache.get(
+        state["search_question"], 
+        user_id=state["user_id"],
+        session_id=state["query"].session_id
+    )
     telemetry = state.get("telemetry", {})
     telemetry["retrieval_time_ms"] += (time.time() - t0) * 1000
     
@@ -448,7 +463,13 @@ You MUST structure your responses using the following Markdown format for every 
 def generate_and_eval_node(state: RAGState) -> dict:
     docs = state.get("docs", [])
     if not docs:
-        return {"final_response": {"question": state["query"].question, "answer": "Answer not found in context.", "citations": []}}
+        return {
+            "final_response": {
+                "question": state["query"].question, 
+                "answer": "No relevant medical documents were found in this chat session to answer your question. Please ensure you have uploaded your medical report or document in this chat.", 
+                "citations": []
+            }
+        }
 
     context = ""
     citations = []
@@ -580,7 +601,12 @@ def explainability_node(state: RAGState) -> dict:
         postgresDB.add_chat_message(state["query"].session_id, state["user_id"], "assistant", json.dumps(res))
     
     # Cache the final response WITH the explanation
-    semanticCache.set(state["search_question"], res, user_id=state["user_id"])
+    semanticCache.set(
+        state["search_question"], 
+        res, 
+        user_id=state["user_id"],
+        session_id=state["query"].session_id
+    )
         
     return {"final_response": res}
 

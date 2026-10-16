@@ -274,7 +274,23 @@ export default function Home() {
             </div>
             
             <div className="shrink-0 pt-2 pb-4 px-4 bg-gradient-to-t from-zinc-50 via-zinc-50 dark:from-black dark:via-black">
-              <ChatInput onSend={handleSendMessage} disabled={isTyping} />
+              <ChatInput 
+                onSend={handleSendMessage} 
+                disabled={isTyping} 
+                activeSessionId={activeSessionId}
+                onSessionCreated={(id) => setActiveSessionId(id)}
+                onUploadSuccess={(filename) => {
+                  fetchSessions();
+                  setMessages(prev => [
+                    ...prev,
+                    {
+                      id: uuidv4(),
+                      role: "assistant",
+                      content: `Uploaded **${filename}** to this chat session. You can now ask any questions about this document.`
+                    }
+                  ]);
+                }}
+              />
             </div>
           </>
         ) : currentView === 'tools' ? (

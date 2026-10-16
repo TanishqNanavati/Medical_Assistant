@@ -31,6 +31,15 @@ class PostgresDB:
             );
             """)
 
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions(
+                session_id TEXT PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
 
             cur.execute("""
             CREATE TABLE IF NOT EXISTS chunks(
@@ -39,6 +48,7 @@ class PostgresDB:
                 page INTEGER,
                 source TEXT,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                session_id TEXT REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
                 document_type TEXT,
                 tsv tsvector
             );
@@ -48,12 +58,19 @@ class PostgresDB:
             CREATE TABLE IF NOT EXISTS documents(
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                session_id TEXT REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
                 filename TEXT NOT NULL,
                 document_type TEXT,
                 summary TEXT,
                 upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 tsv tsvector
             );
+            """)
+
+            # Ensure session_id column exists on existing installations
+            cur.execute("""
+            ALTER TABLE chunks ADD COLUMN IF NOT EXISTS session_id TEXT REFERENCES chat_sessions(session_id) ON DELETE CASCADE;
+            ALTER TABLE documents ADD COLUMN IF NOT EXISTS session_id TEXT REFERENCES chat_sessions(session_id) ON DELETE CASCADE;
             """)
 
             cur.execute("""
@@ -63,19 +80,19 @@ class PostgresDB:
             """)
 
             cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_session
+            ON chunks(session_id);
+            """)
+
+            cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_documents_tsv
             ON documents
             USING GIN(tsv);
             """)
 
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS chat_sessions(
-                session_id TEXT PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                title TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            CREATE INDEX IF NOT EXISTS idx_documents_session
+            ON documents(session_id);
             """)
 
             cur.execute("""
@@ -137,13 +154,14 @@ class PostgresDB:
                         page,
                         source,
                         user_id,
+                        session_id,
                         document_type,
                         tsv
                     )
 
                     VALUES
                     (
-                        %s,%s,%s,%s,%s,
+                        %s,%s,%s,%s,%s,%s,
                         to_tsvector('english', %s)
                     )
                     """,
@@ -152,6 +170,7 @@ class PostgresDB:
                         doc.metadata["page"],
                         doc.metadata["source"],
                         doc.metadata["user_id"],
+                        doc.metadata.get("session_id"),
                         doc.metadata["document_type"],
                         doc.page_content,
                     ),
@@ -162,53 +181,82 @@ class PostgresDB:
     def clear_data(self):
         """Delete all chunks, documents, and users from Postgres and reset identity."""
         with self.conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE chunks, documents, users RESTART IDENTITY CASCADE;")
+            cur.execute("TRUNCATE TABLE chat_messages, chat_sessions, chunks, documents, users RESTART IDENTITY CASCADE;")
             self.conn.commit()
 
-    def add_document(self, user_id: int, filename: str, document_type: str, summary: str):
+    def add_document(self, user_id: int, filename: str, document_type: str, summary: str, session_id: str = None):
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO documents (user_id, filename, document_type, summary, tsv)
-                VALUES (%s, %s, %s, %s, setweight(to_tsvector('english', coalesce(%s, '')), 'A') || setweight(to_tsvector('english', coalesce(%s, '')), 'B'))
+                INSERT INTO documents (user_id, session_id, filename, document_type, summary, tsv)
+                VALUES (%s, %s, %s, %s, %s, setweight(to_tsvector('english', coalesce(%s, '')), 'A') || setweight(to_tsvector('english', coalesce(%s, '')), 'B'))
                 """,
-                (user_id, filename, document_type, summary, filename, summary)
+                (user_id, session_id, filename, document_type, summary, filename, summary)
             )
             self.conn.commit()
 
-    def get_candidate_documents(self, user_id: int, query: str):
-        """Returns the top 10 most recent docs + top 10 BM25 matched docs for the user."""
+    def get_candidate_documents(self, user_id: int, query: str, session_id: str = None):
+        """Returns the top 10 most recent docs + top 10 BM25 matched docs for the user and session."""
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # Get 10 most recent
-            cur.execute(
-                """
-                SELECT filename, summary, upload_timestamp 
-                FROM documents 
-                WHERE user_id = %s 
-                ORDER BY upload_timestamp DESC 
-                LIMIT 10
-                """, 
-                (user_id,)
-            )
-            recent_docs = cur.fetchall()
-
-            # Get BM25 matched docs
             import re
             words = re.findall(r'\w+', query)
-            matched_docs = []
-            if words:
-                or_query = " | ".join(words)
+            or_query = " | ".join(words) if words else None
+
+            if session_id:
+                # Get 10 most recent for this session
                 cur.execute(
                     """
-                    SELECT filename, summary, upload_timestamp
-                    FROM documents
-                    WHERE user_id = %s AND tsv @@ to_tsquery('english', %s)
-                    ORDER BY ts_rank(tsv, to_tsquery('english', %s)) DESC
+                    SELECT filename, summary, upload_timestamp 
+                    FROM documents 
+                    WHERE user_id = %s AND session_id = %s
+                    ORDER BY upload_timestamp DESC 
                     LIMIT 10
-                    """,
-                    (user_id, or_query, or_query)
+                    """, 
+                    (user_id, session_id)
                 )
-                matched_docs = cur.fetchall()
+                recent_docs = cur.fetchall()
+
+                # Get BM25 matched docs for this session
+                matched_docs = []
+                if or_query:
+                    cur.execute(
+                        """
+                        SELECT filename, summary, upload_timestamp
+                        FROM documents
+                        WHERE user_id = %s AND session_id = %s AND tsv @@ to_tsquery('english', %s)
+                        ORDER BY ts_rank(tsv, to_tsquery('english', %s)) DESC
+                        LIMIT 10
+                        """,
+                        (user_id, session_id, or_query, or_query)
+                    )
+                    matched_docs = cur.fetchall()
+            else:
+                # Fallback if no session_id
+                cur.execute(
+                    """
+                    SELECT filename, summary, upload_timestamp 
+                    FROM documents 
+                    WHERE user_id = %s 
+                    ORDER BY upload_timestamp DESC 
+                    LIMIT 10
+                    """, 
+                    (user_id,)
+                )
+                recent_docs = cur.fetchall()
+
+                matched_docs = []
+                if or_query:
+                    cur.execute(
+                        """
+                        SELECT filename, summary, upload_timestamp
+                        FROM documents
+                        WHERE user_id = %s AND tsv @@ to_tsquery('english', %s)
+                        ORDER BY ts_rank(tsv, to_tsquery('english', %s)) DESC
+                        LIMIT 10
+                        """,
+                        (user_id, or_query, or_query)
+                    )
+                    matched_docs = cur.fetchall()
 
             # Combine and deduplicate
             all_candidates = {doc["filename"]: doc for doc in recent_docs + matched_docs}
@@ -242,6 +290,10 @@ class PostgresDB:
         """
         params = [or_query, user_id, or_query]
         
+        if query.session_id:
+            sql += " AND session_id=%s"
+            params.append(query.session_id)
+
         if query.document_type:
             sql += " AND document_type=%s"
             params.append(query.document_type.value)

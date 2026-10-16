@@ -49,6 +49,7 @@ class HybridRetriever:
                     "page": row["page"],
                     "source": row["source"],
                     "user_id":row["user_id"],
+                    "session_id": row.get("session_id"),
                     "document_type": row["document_type"],
                 },
             )

@@ -2,14 +2,18 @@
 
 import { useState, useRef } from "react";
 import { Send, Paperclip, Loader2 } from "lucide-react";
+import { v4 as uuidv4 } from "uuid";
 import { fetchWithAuth } from "../api";
 
 interface ChatInputProps {
   onSend: (message: string, documentType?: string) => void;
   disabled: boolean;
+  activeSessionId?: string | null;
+  onSessionCreated?: (sessionId: string) => void;
+  onUploadSuccess?: (filename: string) => void;
 }
 
-export default function ChatInput({ onSend, disabled }: ChatInputProps) {
+export default function ChatInput({ onSend, disabled, activeSessionId, onSessionCreated, onUploadSuccess }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [docType, setDocType] = useState("");
   const [isUploading, setIsUploading] = useState(false);
@@ -40,10 +44,19 @@ export default function ChatInput({ onSend, disabled }: ChatInputProps) {
       return;
     }
 
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) {
+      currentSessionId = uuidv4();
+      if (onSessionCreated) {
+        onSessionCreated(currentSessionId);
+      }
+    }
+
     setIsUploading(true);
     const formData = new FormData();
     formData.append("file", file);
     formData.append("document_type", docType);
+    formData.append("session_id", currentSessionId);
 
     try {
       const res = await fetchWithAuth("/upload", {
@@ -61,6 +74,9 @@ export default function ChatInput({ onSend, disabled }: ChatInputProps) {
           setIsUploading(false);
           setUploadProgress("Uploading...");
           showToast("File processed successfully!", "success");
+          if (onUploadSuccess) {
+            onUploadSuccess(file.name);
+          }
           break;
         } else if (statusData.task_status === "FAILURE") {
           throw new Error("Upload failed");

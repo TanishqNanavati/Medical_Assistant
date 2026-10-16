@@ -7,6 +7,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import shutil
+import uuid
+from typing import Optional
 from pathlib import Path
 from models.document_type import DocumentType
 from models.query import Query
@@ -98,8 +100,9 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.post("/upload")
 def upload_file(
-    file:UploadFile=File(...),
-    document_type:DocumentType=Form(...),
+    file: UploadFile = File(...),
+    document_type: DocumentType = Form(...),
+    session_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user)
     ):
     
@@ -110,19 +113,27 @@ def upload_file(
             detail="Only PDF and Image (PNG, JPG, JPEG) files are allowed.",
         )
 
-    filepath = UPLOAD_DIR/file.filename
+    safe_filename = Path(file.filename).name
+    filepath = UPLOAD_DIR / safe_filename
+
+    # Ensure chat session exists in PostgreSQL
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    title = f"Document: {safe_filename}"
+    postgresDB.create_chat_session(current_user["user_id"], session_id, title)
 
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    task = process_document_task.delay(str(filepath),document_type.value,current_user["user_id"])
+    task = process_document_task.delay(str(filepath), document_type.value, current_user["user_id"], session_id)
 
     return {
-        "message": "PDF uploaded successfully.",
-        "task_id":task.id,
-        "filename": file.filename,
+        "message": "File uploaded successfully.",
+        "task_id": task.id,
+        "filename": safe_filename,
         "document_type": document_type,
-        "user_id":current_user["user_id"]
+        "user_id": current_user["user_id"],
+        "session_id": session_id
     }
 
 
